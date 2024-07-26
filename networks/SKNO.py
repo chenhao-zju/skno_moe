@@ -6,7 +6,7 @@ from timm.models.layers import trunc_normal_
 from einops import rearrange
 
 from .SKNOBlock import PatchEmbed, SKNOBlock
-# from SKNOBlock_torch import PatchEmbed, SKNOBlock
+# from SKNOBlock import PatchEmbed, SKNOBlock
 
 
 class SKNO(nn.Module):
@@ -18,6 +18,8 @@ class SKNO(nn.Module):
             drop_path_rate=0.,
             sparsity_threshold=0.01,
             hard_thresholding_fraction=1.0,
+            noisy_gating=True,
+            k_element=2,
         ):
         super().__init__()
         self.params = params
@@ -28,6 +30,7 @@ class SKNO(nn.Module):
         self.num_features = self.embed_dim = params['embed_dim']
         self.num_blocks = params['num_blocks'] 
         self.depth = params['encoder_depths']
+        self.use_moe = params['use_moe']
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
 
         self.patch_embed = PatchEmbed(img_size=self.img_size, patch_size=self.patch_size, in_chans=self.in_chans, embed_dim=self.embed_dim)
@@ -43,7 +46,9 @@ class SKNO(nn.Module):
 
         self.blocks = nn.ModuleList([
             SKNOBlock(h_size=self.h, w_size=self.w, dim=self.embed_dim, mlp_ratio=mlp_ratio, drop=drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
-            num_blocks=self.num_blocks, sparsity_threshold=sparsity_threshold, hard_thresholding_fraction=hard_thresholding_fraction) 
+            num_blocks=self.num_blocks, sparsity_threshold=sparsity_threshold, hard_thresholding_fraction=hard_thresholding_fraction, use_moe=params['use_moe'],
+            num_exports=params['num_exports'], noisy_gating=noisy_gating,
+            k_element=k_element) 
         for i in range(self.depth)])
 
         # self.norm = norm_layer(self.embed_dim)
@@ -92,12 +97,20 @@ class SKNO(nn.Module):
         x = self.encoder(x)
         recons = self.decoder(x)
 
+        loss = 0
         for blk in self.blocks:
-            x = blk(x)
+            if self.use_moe:
+                x, l = blk(x)
+                loss += l
+            else:
+                x = blk(x)
         
         output = self.decoder(x)
 
-        return output, recons
+        if self.use_moe:
+            return output, recons, loss
+        else:
+            return output, recons
 
 if __name__ == "__main__":
     params = {
@@ -106,16 +119,18 @@ if __name__ == "__main__":
         'patch_size': 8,
         'feature_dims': 20,
         'num_blocks': 16,
-        'encoder_depths': 1,
-        'embed_dim': 768
+        'encoder_depths': 3,
+        'embed_dim': 768,
+        'use_moe': True,
+        'num_exports': 69
     }
     model = SKNO(params)
 
-    checkpoint = torch.load('/home/bingxing2/ailab/group/ai4earth/haochen/code/skno_moe/test/checkpoint_ms2torch.ckpt')
-    model.load_state_dict(checkpoint)
+    # checkpoint = torch.load('/home/bingxing2/ailab/group/ai4earth/haochen/code/skno_moe/test/checkpoint_ms2torch.ckpt')
+    # model.load_state_dict(checkpoint)
 
     # torch.save(model.state_dict(), '/home/bingxing2/ailab/group/ai4earth/haochen/code/skno_moe/test/checkpoint_torch.pth')
 
     sample = torch.randn(1, 20, 128, 256)
     result = model(sample)
-    print(result[0].shape, result[1].shape)
+    print(result[0].shape, result[1].shape, result[2])

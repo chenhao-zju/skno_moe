@@ -63,7 +63,7 @@ full_field: &FULL_FIELD
   name: 'era5'
   root_dir: '/home/bingxing2/ailab/group/ai4earth/data/era5_np128x256/'
   feature_dims: 69
-  num_blocks: 16
+  num_blocks: 8  # 16
   encoder_depths: 16
   embed_dim: 768
   t_in: 1
@@ -80,7 +80,7 @@ full_field: &FULL_FIELD
   test_period: [2011, 2011]
   patch: True
   patch_size: 4
-  batch_size: 32
+  batch_size: 4
   num_data_workers: 1
   grid_resolution: 1.4
   h_size: 128
@@ -88,13 +88,15 @@ full_field: &FULL_FIELD
   pressure_level_num: 13
   surface_feature_size: 4
   save_rmse_acc: True
+  use_moe: True
+  num_exports: 20  # 69
 
 
 afno_backbone: &backbone
   <<: *FULL_FIELD
   log_to_wandb: !!bool True
   lr: 5E-4
-  batch_size: 32
+  batch_size: 4
   max_epochs: 100
   scheduler: 'CosineAnnealingLR'
   in_channels: 69   # [0, 1 ,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
@@ -117,7 +119,7 @@ afno_backbone_orography: &backbone_orography
 afno_backbone_finetune: 
   <<: *backbone
   lr: 1E-4
-  batch_size: 32
+  batch_size: 4
   log_to_wandb: !!bool True    # True
   max_epochs: 100
   pretrained: !!bool False     # True
@@ -127,7 +129,7 @@ afno_backbone_finetune:
 perturbations:
   <<: *backbone
   lr: 1E-4
-  batch_size: 32
+  batch_size: 4
   max_epochs: 100
   pretrained: !!bool True
   two_step_training: !!bool True
@@ -153,7 +155,7 @@ precip: &precip
   nettype_wind: 'afno'
   log_to_wandb: !!bool False
   lr: 2.5E-4
-  batch_size: 32
+  batch_size: 4
   max_epochs: 100
   precip: '/pscratch/sd/p/pharring/ERA5/precip/total_precipitation'
   time_means_path_tp: '/pscratch/sd/p/pharring/ERA5/precip/total_precipitation/time_means.npy'

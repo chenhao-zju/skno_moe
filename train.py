@@ -65,6 +65,7 @@ class Trainer():
         # precip models
         # self.precip = True if "precip" in params else False
         self.precip = False
+        self.use_moe = params['use_moe']
 
         # self.model = SKNO(img_size = (params.h_size, params.w_size),
         #                   in_chans = params.feature_dims,
@@ -88,16 +89,12 @@ class Trainer():
         if params.enable_amp == True:
             self.gscaler = amp.GradScaler()
 
-        if dist.is_initialized():
-            self.model = DistributedDataParallel(self.model,
-                                              device_ids=[params.local_rank],
-                                              output_device=[params.local_rank],find_unused_parameters=True)
-
         self.iters = 0
         self.startEpoch = 0
         if params.resuming:
             logging.info("Loading checkpoint %s"%params.checkpoint_path)
-            self.restore_checkpoint(params.checkpoint_path)
+            with torch.no_grad():
+                self.restore_checkpoint(params.checkpoint_path)
         # if params.two_step_training:
         #   if params.resuming == False and params.pretrained == True:
         #     logging.info("Starting from pretrained one-step afno model at %s"%params.pretrained_ckpt_path)
@@ -107,6 +104,13 @@ class Trainer():
             #logging.info("Pretrained checkpoint was trained for %d epochs"%self.startEpoch)
             #logging.info("Adding %d epochs specified in config file for refining pretrained model"%self.params.max_epochs)
             #self.params.max_epochs += self.startEpoch
+
+
+        if dist.is_initialized():
+            self.model = DistributedDataParallel(self.model,
+                                              device_ids=[params.local_rank],
+                                              output_device=[params.local_rank],find_unused_parameters=True)
+        
 
         self.epoch = self.startEpoch
 
@@ -208,8 +212,12 @@ class Trainer():
             self.model.zero_grad()
             with amp.autocast(self.params.enable_amp):
                 results = self.model(inp)    # .to(self.device, dtype = torch.float)
-                gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
-                loss = self.loss_obj(gen, recons, tar, inp)
+                if self.use_moe:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results[:-1])     
+                    loss = self.loss_obj(gen, recons, tar, inp) + results[-1]
+                else:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
+                    loss = self.loss_obj(gen, recons, tar, inp)
 
             if self.params.enable_amp:
                 self.gscaler.scale(loss).backward()
@@ -278,8 +286,12 @@ class Trainer():
                 #     valid_l1 += nn.functional.l1_loss(gen_step_one, tar[:,0:self.params.N_out_channels])
                 # else:
                 results = self.model(inp)    # .to(self.device, dtype = torch.float)
-                gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
-                valid_loss += self.loss_obj(gen, recons, tar, inp) 
+                if self.use_moe:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results[:-1])     
+                    valid_loss += self.loss_obj(gen, recons, tar, inp) + results[-1]
+                else:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
+                    valid_loss += self.loss_obj(gen, recons, tar, inp) 
                 valid_l1 += nn.functional.l1_loss(gen, tar)
 
                 valid_steps += 1.
@@ -378,9 +390,12 @@ class Trainer():
                 if 'residual_field' in self.params.target:
                     tar -= inp[:, 0:tar.size()[1]]
 
-          
-            gen, recons = self.model(inp)
-            valid_loss[i] += self.loss_obj(gen, recons, tar, inp) 
+            if self.use_moe:
+                gen, recons, l = self.model(inp)
+                valid_loss[i] += self.loss_obj(gen, recons, tar, inp) + l
+            else:
+                gen, recons = self.model(inp)
+                valid_loss[i] += self.loss_obj(gen, recons, tar, inp) 
             valid_l1[i] += nn.functional.l1_loss(gen, tar)
 
             for c in range(self.params.N_out_channels):
