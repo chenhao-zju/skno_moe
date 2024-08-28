@@ -65,6 +65,7 @@ class Trainer():
         # precip models
         # self.precip = True if "precip" in params else False
         self.precip = False
+        self.use_moe = params['use_moe']
 
         # self.model = SKNO(img_size = (params.h_size, params.w_size),
         #                   in_chans = params.feature_dims,
@@ -80,24 +81,26 @@ class Trainer():
         if params.log_to_wandb:
             wandb.watch(self.model)
 
+        # fix optimizer to adamw  08.21
+        # logging lr
+        # guarantee 5e-4 to 1e-6
+        # lr decay strategy: cos decay 
         if params.optimizer_type == 'FusedAdam':
             self.optimizer = optimizers.FusedAdam(self.model.parameters(), lr = params.lr)
+        elif params.optimizer_type == 'AdamW':
+            self.optimizer = torch.optim.AdamW(self.model.parameters(), lr = params.lr)
         else:
             self.optimizer = torch.optim.Adam(self.model.parameters(), lr = params.lr)
 
         if params.enable_amp == True:
             self.gscaler = amp.GradScaler()
 
-        if dist.is_initialized():
-            self.model = DistributedDataParallel(self.model,
-                                              device_ids=[params.local_rank],
-                                              output_device=[params.local_rank],find_unused_parameters=True)
-
         self.iters = 0
         self.startEpoch = 0
         if params.resuming:
             logging.info("Loading checkpoint %s"%params.checkpoint_path)
-            self.restore_checkpoint(params.checkpoint_path)
+            with torch.no_grad():
+                self.restore_checkpoint(params.checkpoint_path)
         # if params.two_step_training:
         #   if params.resuming == False and params.pretrained == True:
         #     logging.info("Starting from pretrained one-step afno model at %s"%params.pretrained_ckpt_path)
@@ -108,12 +111,19 @@ class Trainer():
             #logging.info("Adding %d epochs specified in config file for refining pretrained model"%self.params.max_epochs)
             #self.params.max_epochs += self.startEpoch
 
+
+        if dist.is_initialized():
+            self.model = DistributedDataParallel(self.model,
+                                              device_ids=[params.local_rank],
+                                              output_device=[params.local_rank],find_unused_parameters=True)
+        
+
         self.epoch = self.startEpoch
 
         if params.scheduler == 'ReduceLROnPlateau':
             self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, factor=0.2, patience=5, mode='min')
         elif params.scheduler == 'CosineAnnealingLR':
-            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=params.max_epochs, last_epoch=self.startEpoch-1)
+            self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=params.max_epochs, last_epoch=self.startEpoch-1, eta_min=params.min_lr)
         else:
             self.scheduler = None
 
@@ -163,6 +173,16 @@ class Trainer():
                 if self.params.save_checkpoint:
                     #checkpoint at the end of every epoch
                     self.save_checkpoint(self.params.checkpoint_path)
+                    if self.epoch % 5 == 0:
+                        mid_checkpoint_path = self.params.mid_checkpoint_path + f'ckpt{str(self.epoch)}.tar'
+                        os.system(f'cp {self.params.checkpoint_path} {mid_checkpoint_path}')
+
+                        if len(os.listdir(self.params.mid_checkpoint_path)) == 8:
+                            name = mid_checkpoint_path.split('/')[-1]
+                            num = int(name.split('.')[0][4:]) - 25
+                            rm_checkpoint_path = self.params.mid_checkpoint_path + f'ckpt{str(num)}.tar'
+                            os.system(f'rm -r {rm_checkpoint_path}')
+
                     if valid_logs['valid_loss'] <= best_valid_loss:
                         #logging.info('Val loss improved from {} to {}'.format(best_valid_loss, valid_logs['valid_loss']))
                         self.save_checkpoint(self.params.best_checkpoint_path)
@@ -171,7 +191,8 @@ class Trainer():
             if self.params.log_to_screen:
                 logging.info('Time taken for epoch {} is {} sec'.format(epoch + 1, time.time()-start))
                 #logging.info('train data time={}, train step time={}, valid step time={}'.format(data_time, tr_time, valid_time))
-                logging.info('Train loss: {}. Valid loss: {}'.format(train_logs['loss'], valid_logs['valid_loss']))
+                current_lr = self.optimizer.param_groups[0]['lr']
+                logging.info('Train loss: {}. Valid loss: {}. Learning Rate: {}.'.format(train_logs['loss'], valid_logs['valid_loss'], current_lr))
                 logging.info(f"Test results of RMSE: z500: {valid_logs['z500']}, t2m: {valid_logs['t2m']}, t850: {valid_logs['t850']}, u10: {valid_logs['u10']}")
 
         #        if epoch==self.params.max_epochs-1 and self.params.prediction_type == 'direct':
@@ -208,8 +229,12 @@ class Trainer():
             self.model.zero_grad()
             with amp.autocast(self.params.enable_amp):
                 results = self.model(inp)    # .to(self.device, dtype = torch.float)
-                gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
-                loss = self.loss_obj(gen, recons, tar, inp)
+                if self.use_moe:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results[:-1])     
+                    loss = self.loss_obj(gen, recons, tar, inp) + results[-1]
+                else:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
+                    loss = self.loss_obj(gen, recons, tar, inp)
 
             if self.params.enable_amp:
                 self.gscaler.scale(loss).backward()
@@ -278,8 +303,12 @@ class Trainer():
                 #     valid_l1 += nn.functional.l1_loss(gen_step_one, tar[:,0:self.params.N_out_channels])
                 # else:
                 results = self.model(inp)    # .to(self.device, dtype = torch.float)
-                gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
-                valid_loss += self.loss_obj(gen, recons, tar, inp) 
+                if self.use_moe:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results[:-1])     
+                    valid_loss += self.loss_obj(gen, recons, tar, inp) + results[-1]
+                else:
+                    gen, recons = map(lambda x: x.to(self.device, dtype = torch.float), results)     
+                    valid_loss += self.loss_obj(gen, recons, tar, inp) 
                 valid_l1 += nn.functional.l1_loss(gen, tar)
 
                 valid_steps += 1.
@@ -378,9 +407,12 @@ class Trainer():
                 if 'residual_field' in self.params.target:
                     tar -= inp[:, 0:tar.size()[1]]
 
-          
-            gen, recons = self.model(inp)
-            valid_loss[i] += self.loss_obj(gen, recons, tar, inp) 
+            if self.use_moe:
+                gen, recons, l = self.model(inp)
+                valid_loss[i] += self.loss_obj(gen, recons, tar, inp) + l
+            else:
+                gen, recons = self.model(inp)
+                valid_loss[i] += self.loss_obj(gen, recons, tar, inp) 
             valid_l1[i] += nn.functional.l1_loss(gen, tar)
 
             for c in range(self.params.N_out_channels):
@@ -459,14 +491,15 @@ if __name__ == '__main__':
   params['world_size'] = 1
   if 'WORLD_SIZE' in os.environ:
     params['world_size'] = int(os.environ['WORLD_SIZE'])
-  print('world_size:', params['world_size'])
+  logging.info(f"world_size:, {params['world_size']}")
 
   wandb.require("core")
   world_rank = 0
   local_rank = 0
   if params['world_size'] > 1:
     dist.init_process_group(backend='nccl',
-                            init_method='env://')
+                            init_method='env://',
+                            )
     local_rank = int(os.environ["LOCAL_RANK"])
     args.gpu = local_rank
     world_rank = dist.get_rank()
@@ -474,21 +507,27 @@ if __name__ == '__main__':
     params['batch_size'] = int(params.batch_size//params['world_size'])
 
   
-  print('local_rank:', local_rank)
+  logging.info(f"local_rank:, {local_rank}")
 
   torch.cuda.set_device(local_rank)
   torch.backends.cudnn.benchmark = True
 
   # Set up directory
-  expDir = os.path.join(args.exp_dir, args.config, str(args.run_num))
+  # expDir = os.path.join(args.exp_dir, args.config, str(args.run_num))
+  expDir = args.exp_dir + args.config + '/' + str(args.run_num) + '/'
   if  world_rank==0:
     if not os.path.isdir(expDir):
       os.makedirs(expDir)
-      os.makedirs(os.path.join(expDir, 'training_checkpoints/'))
+    #   os.makedirs(os.path.join(expDir, 'training_checkpoints/'))
+      os.makedirs(expDir + 'training_checkpoints/')
 
   params['experiment_dir'] = os.path.abspath(expDir)
-  params['checkpoint_path'] = os.path.join(expDir, 'training_checkpoints/ckpt.tar')
-  params['best_checkpoint_path'] = os.path.join(expDir, 'training_checkpoints/best_ckpt.tar')
+#   params['checkpoint_path'] = os.path.join(expDir, 'training_checkpoints/ckpt.tar')
+#   params['mid_checkpoint_path'] = os.path.join(expDir, 'training_checkpoints/')
+#   params['best_checkpoint_path'] = os.path.join(expDir, 'training_checkpoints/best_ckpt.tar')
+  params['checkpoint_path'] = expDir + 'training_checkpoints/ckpt.tar'
+  params['mid_checkpoint_path'] = expDir + 'training_checkpoints/'
+  params['best_checkpoint_path'] = expDir + 'training_checkpoints/best_ckpt.tar'
 
   # Do not comment this line out please:
   args.resuming = True if os.path.isfile(params.checkpoint_path) else False

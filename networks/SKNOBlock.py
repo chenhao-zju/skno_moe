@@ -5,6 +5,9 @@ import torch.nn as nn
 import torch.fft
 import torch.nn.functional as F
 
+from .moe_layer import Mlp, MoE
+# from moe_layer import Mlp, MoE
+
 
 def legendre_gauss_weights(n, a=-1.0, b=1.0):
     r"""
@@ -334,23 +337,23 @@ class DropPath(nn.Module):
         return drop_path(x, self.drop_prob, self.training) 
 
 
-class Mlp(nn.Module):
-    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
-        super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+# class Mlp(nn.Module):
+#     def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+#         super().__init__()
+#         out_features = out_features or in_features
+#         hidden_features = hidden_features or in_features
+#         self.fc1 = nn.Linear(in_features, hidden_features)
+#         self.act = act_layer()
+#         self.fc2 = nn.Linear(hidden_features, out_features)
+#         self.drop = nn.Dropout(drop)
 
-    def forward(self, x):
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
+#     def forward(self, x):
+#         x = self.fc1(x)
+#         x = self.act(x)
+#         x = self.drop(x)
+#         x = self.fc2(x)
+#         x = self.drop(x)
+#         return x
 
 
 class SKNO2D(nn.Module):
@@ -466,15 +469,28 @@ class SKNOBlock(nn.Module):
             double_skip=True,
             num_blocks=16,
             sparsity_threshold=0.01,
-            hard_thresholding_fraction=1.0
+            hard_thresholding_fraction=1.0,
+            use_moe=False,
+            num_exports=69,
+            noisy_gating=True,
+            k_element=2
         ):
         super().__init__()
+        self.use_moe = use_moe
+        self.h_size = h_size
+        self.w_size = w_size
+        self.dim = dim
         self.layer_norm = norm_layer(dim)
         self.filter = SKNO2D(h_size, w_size, dim, num_blocks, high_freq=True, sparsity_threshold=sparsity_threshold, hard_thresholding_fraction=hard_thresholding_fraction) 
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
         self.ffn_norm = norm_layer(dim)
         mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
+        if self.use_moe:
+            self.moe = MoE(input_size=dim, output_size=dim, num_experts=num_exports, hidden_size=mlp_hidden_dim, noisy_gating=noisy_gating, k=k_element)
+        else:
+            self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+
         self.double_skip = double_skip
         
 
@@ -488,10 +504,21 @@ class SKNOBlock(nn.Module):
             residual = x
 
         x = self.ffn_norm(x)
-        x = self.mlp(x)
+
+        if self.use_moe:
+            x = x.view(-1, self.dim)
+            x, loss = self.moe(x)
+            x = x.view(-1, self.h_size, self.w_size, self.dim)
+        else:
+            x = self.mlp(x)
+
         x = self.drop_path(x)
         x = x + residual
-        return x
+
+        if self.use_moe:
+            return x, loss
+        else:
+            return x
 
 class PatchEmbed(nn.Module):
     def __init__(self, img_size=(224, 224), patch_size=(16, 16), in_chans=3, embed_dim=768):
@@ -509,8 +536,9 @@ class PatchEmbed(nn.Module):
         return x
 
 if __name__ == "__main__":
-    model = SKNO2D(h_size=32, w_size=64, hidden_size=768)
-    outputs = model(torch.randn(1, 32, 64, 768))
+    # model = SKNO2D(h_size=32, w_size=64, hidden_size=768)
+    model = SKNOBlock(h_size=32, w_size=64, dim=768, use_moe=True)
+    outputs, _ = model(torch.randn(1, 32, 64, 768))
     print(outputs.shape)
 
     # inputs = torch.randn(1, 20, 32, 64)

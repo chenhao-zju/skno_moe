@@ -81,12 +81,17 @@ TARGET_ATMOSPHERIC_NO_W_VARS = (
     "specific_humidity",
 )
 
+# FEATURE_DICT = {'Z500': (4, 0), 'T850': (1, 4), 'U10': (-2, 0), 'T2M': (-3, 0)}
 FEATURE_DICT = {'Z500': (5, 0), 'T850': (2, 4), 'U10': (-2, 0), 'T2M': (-3, 0)}
+
 SIZE_DICT = {0.25: [721, 1440], 0.5: [360, 720], 1.4: [128, 256]}
 
 # higher+ surface z*13+q*13+u*13+v*13+t*13
-surface_features = ['msl', 't2m', 'u10', 'v10']    # 'tp1h'
+surface_features = []    # 'tp1h'
+# surface_features = ['t2m', 'u10', 'v10']    # 'tp1h'
+
 higher_features = ['z', 'q', 'u', 'v', 't']
+# pressure_level = [1000.0, 850.0, 700.0, 600.0, 500.0, 400.0, 300.0, 200.0, 150.0, 100.0, 50.0]
 pressure_level = [1000.0, 925.0, 850.0, 700.0, 600.0, 500.0, 400.0, 300.0, 250.0, 200.0, 150.0, 100.0, 50.0]
 
 total_levels= [1000.,  975.,  950.,  925.,  900.,  875.,  850.,  825.,  800.,
@@ -347,8 +352,12 @@ class Era5Data(Dataset):
             self.climate_features = np.stack(self.climate_lst, axis=0).astype(np.float32)
             self.climate_surface_features = np.stack(self.climate_surface_lst, axis=0).astype(np.float32)
             self.climate_features = self.climate_features.transpose((0, 4, 3, 1, 2)).reshape(self.t_out, len(pressure_level)*len(higher_features) , self.h_size, self.w_size)
-            self.climate_surface_features = self.climate_surface_features.transpose((0, 3, 1, 2)).reshape(self.t_out, len(surface_features), self.h_size, self.w_size)
-            self.climate = np.squeeze(np.concatenate([self.climate_features, self.climate_surface_features], axis=1))
+            if surface_features != [] :
+                self.climate_surface_features = self.climate_surface_features.transpose((0, 3, 1, 2)).reshape(self.t_out, len(surface_features), self.h_size, self.w_size)
+                self.climate = np.squeeze(np.concatenate([self.climate_features, self.climate_surface_features], axis=1))
+            else:
+                self.climate_surface_features = None
+                self.climate = np.squeeze(self.climate_features)
 
         return self._process_fn(x, x_surface, label, label_surface)
 
@@ -368,7 +377,11 @@ class Era5Data(Dataset):
         all_level_features = np.squeeze(np.stack(all_level_features, axis=-1))    # [h, w, level, feature]
 
         all_surface_features = [np.load(self.root_surface_dir + '/' + half_path + i + '.npy') for i in surface_features]
-        all_surface_features = np.squeeze(np.stack(all_surface_features, axis=-1))     # [h, w, feature]
+
+        if surface_features == []:
+            all_surface_features = None
+        else:
+            all_surface_features = np.squeeze(np.stack(all_surface_features, axis=-1))     # [h, w, feature]
 
         # print('level_feature:', all_level_features.shape, 'surface feature:', all_surface_features.shape)
 
@@ -387,7 +400,10 @@ class Era5Data(Dataset):
         all_level_climate_features = np.stack(all_level_climate_features, axis=-1)    # [level, h, w, feature]
 
         all_surface_climate_features = [np.load(self.climate_surface_dir + path_name + '/' + i + '.npy') for i in surface_features]
-        all_surface_climate_features = np.stack(all_surface_climate_features, axis=-1)     # [h, w, feature]
+        if surface_features != []:
+            all_surface_climate_features = np.stack(all_surface_climate_features, axis=-1)     # [h, w, feature]
+        else:
+            all_surface_climate_features = None
 
         # print('level_climate:', all_level_climate_features.shape, 'surface climate:', all_surface_climate_features.shape)
 
@@ -447,7 +463,8 @@ class Era5Data(Dataset):
 
     def _normalize(self, x, x_surface):
         x = (x - self.mean_pressure_level) / self.std_pressure_level
-        x_surface = (x_surface - self.mean_surface) / self.std_surface
+        if x_surface is not None:
+            x_surface = (x_surface - self.mean_surface) / self.std_surface
         return x, x_surface
 
     def _process_fn(self, x, x_surface, label, label_surface):
@@ -461,19 +478,27 @@ class Era5Data(Dataset):
 
         # if self.patch:
         self.h_size = self.h_size - self.h_size % self.patch_size
-        x = x[:, :self.h_size, ...]
-        x_surface = x_surface[:, :self.h_size, ...]
-        label = label[:, :self.h_size, ...]
-        label_surface = label_surface[:, :self.h_size, ...]
 
+        x = x[:, :self.h_size, ...]
+        label = label[:, :self.h_size, ...]
         x = x.transpose((0, 4, 3, 1, 2)).reshape(self.t_in, level_size * feature_size, self.h_size, self.w_size)
-        x_surface = x_surface.transpose((0, 3, 1, 2)).reshape(self.t_in, surface_size, self.h_size, self.w_size)
         label = label.transpose((0, 4, 3, 1, 2)).reshape(self.t_out, level_size * feature_size,
                                                             self.h_size, self.w_size)
-        label_surface = label_surface.transpose((0, 3, 1, 2)).reshape(self.t_out, surface_size,
+        
+                                                            
+        if surface_features != []:
+            x_surface = x_surface[:, :self.h_size, ...]
+            label_surface = label_surface[:, :self.h_size, ...]
+            x_surface = x_surface.transpose((0, 3, 1, 2)).reshape(self.t_in, surface_size, self.h_size, self.w_size)
+            label_surface = label_surface.transpose((0, 3, 1, 2)).reshape(self.t_out, surface_size,
                                                                         self.h_size, self.w_size)
-        inputs = np.concatenate([x, x_surface], axis=1)
-        labels = np.concatenate([label, label_surface], axis=1)
+
+        if surface_features != []:
+            inputs = np.concatenate([x, x_surface], axis=1)
+            labels = np.concatenate([label, label_surface], axis=1)
+        else:
+            inputs = x
+            labels = label
 
         # else:
         #     x = x.transpose((0, 4, 3, 1, 2)).reshape(self.t_in, self.h_size * self.w_size,
@@ -535,7 +560,7 @@ if __name__ == '__main__':
     data_params = {
             'name': 'era5',
             'root_dir': '/home/bingxing2/ailab/group/ai4earth/data/era5_np128x256/',
-            'feature_dims': 69,
+            'feature_dims': 65,   # 68, 69
             't_in': 1,
             't_out_train': 1,
             't_out_valid': 1,
@@ -555,7 +580,7 @@ if __name__ == '__main__':
             'grid_resolution': 1.4,
             'h_size': 128,
             'w_size': 256,
-            'surface_feature_size': 4,
+            'surface_feature_size': 0,
             'pressure_level_num': 13
         }
         

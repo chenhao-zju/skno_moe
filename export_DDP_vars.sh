@@ -4,3 +4,8 @@ export LOCAL_RANK=$SLURM_LOCALID
 export WORLD_SIZE=$SLURM_NTASKS
 export MASTER_PORT=29500 # default from torch launcher
 export WANDB_START_METHOD="thread"
+
+echo "WORLD_SIZE="$WORLD_SIZE
+echo "LOCAL_RANK="$LOCAL_RANK
+echo "RANK="$RANK
+echo "MASTER_ADDR="$MASTER_ADDR

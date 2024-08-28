@@ -64,6 +64,7 @@ class InferenceModule(WeatherForecast):
         self.std_all = np.concatenate([self.std.transpose((1,0)).reshape([-1]), self.std_s], axis=-1)
         
         self.feature_dims = config['feature_dims']
+        self.use_moe = config['use_moe']
         # self.climate = np.load(os.path.join(statistic_dir, "climate_1.4.npy"))
 
     def forecast(self, inputs):
@@ -71,7 +72,10 @@ class InferenceModule(WeatherForecast):
         with torch.no_grad():
             for _ in range(self.t_out_test):
                 # logging.info(f'inputs shape: {inputs.shape}')
-                pred, _ = self.model(inputs)
+                if self.use_moe:
+                    pred, _, _ = self.model(inputs)
+                else:
+                    pred, _ = self.model(inputs)
                 pred_lst.append(pred.to('cpu'))
                 # logging.info(f'pred shape: {pred.shape}, pred length: {len(pred_lst)}')
                 inputs = pred
@@ -231,6 +235,7 @@ if __name__ == '__main__':
     params['world_size'] = 1
     # params['interp'] = args.interp
     params['global_batch_size'] = params.batch_size
+    # params['global_batch_size'] = 32
 
     torch.cuda.set_device(0)
     torch.backends.cudnn.benchmark = True
