@@ -63,10 +63,10 @@ full_field: &FULL_FIELD
   # dataset setting
   name: 'era5'
   root_dir: '/home/bingxing2/ailab/group/ai4earth/data/era5_np128x256/'
-  feature_dims: 65   # 65 68 69
-  num_blocks: 16  # 8 16
-  encoder_depths: 24  # 16, 20, 24 change to 20 24
-  embed_dim: 1024   # 768, 1024 change to 1024
+  feature_dims: 69
+  num_blocks: 8
+  encoder_depths: 16
+  embed_dim: 768
   t_in: 1
   t_out_train: 1
   t_out_valid: 1
@@ -81,7 +81,7 @@ full_field: &FULL_FIELD
   test_period: [2021, 2021]
   patch: True
   patch_size: 4
-  batch_size: 32   # 4 32  64 96    change to 32 08.21
+  batch_size: 4
   num_data_workers: 1
   grid_resolution: 1.4
   h_size: 128
@@ -89,15 +89,14 @@ full_field: &FULL_FIELD
   pressure_level_num: 13
   surface_feature_size: 4
   save_rmse_acc: True
-  use_moe: False
+  use_moe: True
   num_exports: 20  # 69
-
 
 afno_backbone: &backbone
   <<: *FULL_FIELD
   log_to_wandb: !!bool True
   lr: 5E-4
-  batch_size: 32    # 4 32 64 96
+  batch_size: 4
   max_epochs: 200
   scheduler: 'CosineAnnealingLR'
   in_channels: 65   # 65 68 69   # [0, 1 ,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
@@ -120,9 +119,9 @@ afno_backbone: &backbone
 # afno_backbone_finetune: 
 #   <<: *backbone
 #   lr: 1E-4
-#   batch_size: 64    # 4 32
+#   batch_size: 32
 #   log_to_wandb: !!bool True    # True
-#   max_epochs: 150
+#   max_epochs: 100
 #   pretrained: !!bool False     # True
 #   two_step_training: !!bool False       # True
 #   pretrained_ckpt_path: '/pscratch/sd/s/shas1693/results/era5_wind/afno_backbone/0/training_checkpoints/best_ckpt.tar'
@@ -130,8 +129,8 @@ afno_backbone: &backbone
 # perturbations:
 #   <<: *backbone
 #   lr: 1E-4
-#   batch_size: 64     # 4 32
-#   max_epochs: 150
+#   batch_size: 32
+#   max_epochs: 100
 #   pretrained: !!bool True
 #   two_step_training: !!bool True
 #   pretrained_ckpt_path: '/pscratch/sd/j/jpathak/ERA5_expts_gtc/wind/afno_20ch_bs_64_lr5em4_blk_8_patch_8_cosine_sched/1/training_checkpoints/best_ckpt.tar'
@@ -147,7 +146,7 @@ afno_backbone: &backbone
 #   perturb: !!bool True
 #   n_level: 0.3
 
-# ### PRECIP ###
+### PRECIP ###
 # precip: &precip
 #   <<: *backbone
 #   in_channels: [0, 1 ,2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
@@ -156,8 +155,8 @@ afno_backbone: &backbone
 #   nettype_wind: 'afno'
 #   log_to_wandb: !!bool False
 #   lr: 2.5E-4
-#   batch_size: 4
-#   max_epochs: 150
+#   batch_size: 32
+#   max_epochs: 100
 #   precip: '/pscratch/sd/p/pharring/ERA5/precip/total_precipitation'
 #   time_means_path_tp: '/pscratch/sd/p/pharring/ERA5/precip/total_precipitation/time_means.npy'
 #   model_wind_path: '/pscratch/sd/s/shas1693/results/era5_wind/afno_backbone_finetune/0/training_checkpoints/best_ckpt.tar'

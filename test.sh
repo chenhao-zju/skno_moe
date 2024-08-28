@@ -16,4 +16,3 @@ module unload compilers/gcc
 CUDA_VISIBLE_DEVICES=0 nohup /home/bingxing2/ailab/scxlab0094/.conda/envs/chenhao_env/bin/python test.py \
             --yaml_config=$config_file --config=$config --run_num=$run_num --override_dir=$LOG_DIR \
             --weights=$WEIGHTS > ${LOG_DIR}test.log 2>&1 &
-
